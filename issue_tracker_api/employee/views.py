@@ -1,10 +1,10 @@
-from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth.models import User
+from django.db import transaction
 from .models import Employee
-from .serializers import EmployeeSerializer, UserSerializer
+from .serializers import EmployeeSerializer
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -13,63 +13,52 @@ def register_employee(request):
     Register a new employee
     """
     try:
-        data = request.data
-        
-        # Validate required fields
-        required_fields = ['username', 'email', 'password', 'first_name', 'last_name']
-        for field in required_fields:
-            if not data.get(field):
-                return Response(
-                    {'error': f'{field} is required'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-        # Check if user already exists
-        if User.objects.filter(username=data['username']).exists():
-            return Response(
-                {'error': 'Username already exists'},
-                status=status.HTTP_400_BAD_REQUEST
+        with transaction.atomic():  # ✅ This starts the transaction block
+            data = request.data
+            
+            # Validate required fields
+            if not data.get('username'):
+                return Response({'error': 'Username is required'}, status=400)
+            
+            if not data.get('password'):
+                return Response({'error': 'Password is required'}, status=400)
+            
+            # Check if user exists
+            if User.objects.filter(username=data['username']).exists():
+                return Response({'error': 'Username already exists'}, status=400)
+            
+            # Create user with is_active=True
+            user = User.objects.create_user(
+                username=data.get('username'),
+                password=data.get('password'),
+                email=data.get('email', ''),
+                first_name=data.get('first_name', ''),
+                last_name=data.get('last_name', ''),
+                is_active=True  # ✅ Ensure user is active
             )
-        
-        if User.objects.filter(email=data['email']).exists():
-            return Response(
-                {'error': 'Email already exists'},
-                status=status.HTTP_400_BAD_REQUEST
+            
+            # Create employee profile
+            employee = Employee.objects.create(
+                user=user,
+                department=data.get('department', ''),
+                position=data.get('position', ''),
+                phone_number=data.get('phone_number', '')
             )
-        
-        # Create User
-        user = User.objects.create_user(
-            username=data['username'],
-            email=data['email'],
-            password=data['password'],
-            first_name=data['first_name'],
-            last_name=data['last_name']
-        )
-        
-        # Create Employee profile
-        employee = Employee.objects.create(
-            user=user,
-            department=data.get('department', 'General'),
-            position=data.get('position', 'Employee'),
-            phone_number=data.get('phone_number', ''),
-            hire_date=data.get('hire_date')  # You might want to set this automatically
-        )
-        
-        # Return success response
-        return Response({
-            'message': 'Employee registered successfully',
-            'user_id': user.id,
-            'employee_id': employee.id
-        }, status=status.HTTP_201_CREATED)
+            
+            return Response({
+                'message': 'Employee registered successfully',
+                'user_id': user.id,
+                'username': user.username
+            }, status=201)
+        # ✅ The with statement automatically closes the transaction
         
     except Exception as e:
-        return Response(
-            {'error': str(e)},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        print("Exception:", str(e))  # Debugging
+        return Response({'error': str(e)}, status=500)
 
 @api_view(['GET'])
-def get_current_employee(request):
+@permission_classes([IsAuthenticated])
+def employee_profile(request):
     """
     Get current employee profile
     """
@@ -78,46 +67,29 @@ def get_current_employee(request):
         serializer = EmployeeSerializer(employee)
         return Response(serializer.data)
     except Employee.DoesNotExist:
-        return Response(
-            {'error': 'Employee profile not found'}, 
-            status=status.HTTP_404_NOT_FOUND
-        )
-        
-        
+        # Return basic user info if no employee profile exists
+        return Response({
+            'user': {
+                'id': request.user.id,
+                'username': request.user.username,
+                'email': request.user.email,
+                'first_name': request.user.first_name,
+                'last_name': request.user.last_name,
+                'is_staff': request.user.is_staff,
+                'is_superuser': request.user.is_superuser
+            },
+            'message': 'Employee profile not found'
+        })
+
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def employee_list(request):
     """
     Get list of all employees (admin only)
     """
     if not request.user.is_staff:
-        return Response(
-            {'error': 'Permission denied'}, 
-            status=status.HTTP_403_FORBIDDEN
-        )
+        return Response({'error': 'Permission denied'}, status=403)
     
     employees = Employee.objects.all()
     serializer = EmployeeSerializer(employees, many=True)
     return Response(serializer.data)
-
-@api_view(['GET'])
-def employee_detail(request, pk):
-    """
-    Get specific employee details
-    """
-    try:
-        employee = Employee.objects.get(pk=pk)
-        
-        # Users can only see their own profile unless they're admin
-        if not request.user.is_staff and employee.user != request.user:
-            return Response(
-                {'error': 'Permission denied'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        serializer = EmployeeSerializer(employee)
-        return Response(serializer.data)
-    except Employee.DoesNotExist:
-        return Response(
-            {'error': 'Employee not found'}, 
-            status=status.HTTP_404_NOT_FOUND
-        )
