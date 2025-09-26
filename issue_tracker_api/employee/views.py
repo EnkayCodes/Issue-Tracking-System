@@ -4,8 +4,13 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth.models import User
 from django.db import transaction
 from .models import Employee
-from .serializers import EmployeeSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .serializers import EmployeeSerializer, CustomTokenObtainPairSerializer
 
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+    
+    
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_employee(request):
